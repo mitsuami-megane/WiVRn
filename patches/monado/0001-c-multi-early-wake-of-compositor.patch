@@ -1,0 +1,82 @@
+From 86f84161da64d17571d027b9137ec4d99a4e0897 Mon Sep 17 00:00:00 2001
+From: Patrick Nicolas <patricknicolas@laposte.net>
+Date: Tue, 22 Oct 2024 15:23:19 +0200
+Subject: [PATCH] c/multi: early wake of compositor
+
+---
+ src/xrt/compositor/multi/comp_multi_compositor.c |  3 +++
+ src/xrt/compositor/multi/comp_multi_system.c     | 13 ++++++++++++-
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/src/xrt/compositor/multi/comp_multi_compositor.c b/src/xrt/compositor/multi/comp_multi_compositor.c
+index 2895ccb0f..61802a347 100644
+--- a/src/xrt/compositor/multi/comp_multi_compositor.c
++++ b/src/xrt/compositor/multi/comp_multi_compositor.c
+@@ -26,6 +26,7 @@
+ #include <math.h>
+ #include <stdio.h>
+ #include <assert.h>
++#include <signal.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -232,6 +233,8 @@ wait_for_scheduled_free(struct multi_compositor *mc)
+ 	slot_move_and_clear_locked(mc, &mc->scheduled, &mc->progress);
+ 	os_mutex_unlock(&mc->slot_lock);
+ 	os_mutex_unlock(&mc->msc->list_and_timing_lock);
++
++	pthread_kill(mc->msc->oth.thread, SIGUSR1);
+ }
+ 
+ static void *
+diff --git a/src/xrt/compositor/multi/comp_multi_system.c b/src/xrt/compositor/multi/comp_multi_system.c
+index b06b03a58..913a525b3 100644
+--- a/src/xrt/compositor/multi/comp_multi_system.c
++++ b/src/xrt/compositor/multi/comp_multi_system.c
+@@ -23,6 +23,8 @@
+ #include "util/u_trace_marker.h"
+ #include "util/u_distortion_mesh.h"
+ 
++#include "math/m_api.h"
++
+ #ifdef XRT_OS_LINUX
+ #include "util/u_linux.h"
+ #endif
+@@ -33,6 +35,7 @@
+ #include <math.h>
+ #include <stdio.h>
+ #include <assert.h>
++#include <signal.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -528,7 +531,9 @@ multi_main_loop(struct multi_system_compositor *msc)
+ 		wait_frame(&sleeper, xc, frame_id, wake_up_time_ns);
+ 
+ 		int64_t now_ns = os_monotonic_get_ns();
+-		int64_t diff_ns = predicted_display_time_ns - now_ns;
++		if (now_ns < wake_up_time_ns)
++			U_LOG_D("early wake by %ldns", wake_up_time_ns - now_ns);
++		int64_t diff_ns = predicted_display_time_ns - MAX(wake_up_time_ns, now_ns);
+ 
+ 		// Now we know the diff, broadcast to pacers.
+ 		broadcast_timings_to_pacers(msc, predicted_display_time_ns, predicted_display_period_ns, diff_ns);
+@@ -564,9 +569,15 @@ multi_main_loop(struct multi_system_compositor *msc)
+ 	return 0;
+ }
+ 
++static void
++sig_handler(int signo)
++{}
++
+ static void *
+ thread_func(void *ptr)
+ {
++	struct sigaction act = {.sa_handler = &sig_handler};
++	sigaction(SIGUSR1, &act, NULL);
+ 	return (void *)(intptr_t)multi_main_loop((struct multi_system_compositor *)ptr);
+ }
+ 
+-- 
+2.47.0
+
